@@ -2,6 +2,7 @@ assert(plugin)
 
 local RunService = game:GetService("RunService")
 local InsertService = game:GetService("InsertService")
+local ServerStorage = game:GetService("ServerStorage")
 local Selection = game:GetService("Selection")
 local toolbar = plugin:CreateToolbar("UI Editor")
 
@@ -36,6 +37,49 @@ function main.new(self)
 	self.minZoom,self.maxZoom = 50, 150
 	self.defaultZoom = 100
 	
+	
+	self.utilScreen = self:createInstance("ScreenGui", {
+		Name = "Utilities";
+		ZIndexBehavior = Enum.ZIndexBehavior.Global;
+		IgnoreGuiInset = false;
+		
+		Parent = self.interface
+	})
+	
+	self.viewPort = self:createInstance("ViewportFrame", {
+		Name = "ViewPort";
+		AnchorPoint = Vector2.new(.5,.5);
+		Position = UDim2.fromScale(.5,.5);
+		Size = UDim2.fromScale(.4,.4);
+		SizeConstraint = Enum.SizeConstraint.RelativeYY;
+		BackgroundTransparency = 1;
+		
+		Parent = self.utilScreen
+	})
+	
+	self.worldModel = self:createInstance("WorldModel", {
+		Name = "WorldModel";
+		Parent = self.viewPort
+	})
+	
+	local fakePlayer = Instance.new("Model")
+	
+	local playerData = ServerStorage:FindFirstChild("Replicated") or ServerStorage:FindFirstChild("Client")
+	playerData = playerData:Clone()
+	playerData.Parent = fakePlayer
+	
+	local player = {}
+	setmetatable(player, {
+		__index = function(_table,key)
+			print(_table,key)
+			return fakePlayer[key]
+		end;
+	})
+	
+	_G.player = player
+	
+	_G.Character = self:createCharacter()
+	
 	return self
 end
 
@@ -44,6 +88,96 @@ function main:updateInterfaceTitle(selectionName, interface)
 	if (interface) then
 		interface.Title = string.format("UIEditor - Selection %s", (selectionName and string.format("\"%s\"",selectionName)) or "None")
 	end
+end
+
+local r15DefaultRigId = 1664543044
+
+local function r15RigImported(rig)
+	-- Not all packages have all their parts, we load MrGreyR15 first then substitute the parts we did load
+	local R15Dummy = game:GetService("InsertService"):LoadAsset(r15DefaultRigId):GetChildren()[1]
+
+	for _, part in pairs(rig:GetChildren()) do
+		local matchingPart = R15Dummy:FindFirstChild(part.Name)
+		if matchingPart then
+			matchingPart:Destroy()
+		end
+		part.Parent = R15Dummy
+	end
+	rig:Destroy()
+
+	rig = R15Dummy
+	rig.Parent = workspace
+
+	local humanoid = rig:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid:BuildRigFromAttachments()
+	end
+
+	local r15Head = rig:WaitForChild("Head", 1) -- 1 second timeout
+
+	local existingFace = r15Head:FindFirstChild("face") or r15Head:FindFirstChild("Face")
+	if existingFace == nil then
+		local face = Instance.new("Decal", r15Head)
+		face.Name = "face"
+		face.Texture = "rbxasset://textures/face.png"
+	end
+
+	return rig
+end
+
+local function BuildR15Rig(package)
+	--Model, HRP & Head
+	local m = Instance.new("Model", workspace)
+	local headMesh = nil
+	local face = nil
+	if package ~= nil then
+		local pkIds = game:GetService("AssetService"):GetAssetIdsForPackage(package)
+		--Load the assets and parse
+		for _, v in pairs(pkIds) do
+			local a = game:GetService("InsertService"):LoadAsset(v)
+			if a:FindFirstChild("R15ArtistIntent") then
+				for _, x in pairs(a.R15ArtistIntent:GetChildren()) do
+					x.Parent = m
+				end
+			elseif a:FindFirstChild("R15") then
+				for _, x in pairs(a.R15:GetChildren()) do
+					x.Parent = m
+				end
+			elseif a:FindFirstChild("face") then
+				face = a.face
+			elseif a:FindFirstChild("Face") then
+				face = a.Face
+			elseif a:FindFirstChild("Mesh") then
+				headMesh = a.Mesh
+			end
+		end
+	end
+
+	local rig = r15RigImported(m)
+
+	if headMesh then
+		rig.Head.Mesh:Destroy()
+		headMesh.Parent = rig.Head
+	end
+
+	if face then
+		for _, v in pairs(rig.Head:GetChildren()) do
+			if v.Name == "face" or v.Name == "Face" then
+				v:Destroy()
+			end
+		end
+		face.Parent = rig.Head
+	end
+
+	return rig
+end
+
+function main:createCharacter()
+	local character = BuildR15Rig(27112438)
+	character.Name = "Character"
+	character.Parent = self.worldModel
+
+	return character
 end
 
 function main:createInterface()
@@ -86,13 +220,78 @@ function main:createFromStarterGui()
 			uiScreen = uiScreen:Clone()
 			--uiScreen.Parent = self.interface
 			local last
+			local scriptQueue = {}
+			
 			local function recurseMake(element: Instance): Instance
 				last = element
 				for i,v in pairs(element:GetChildren())do
+					print(v.Name)
 					v.Parent = last.Parent
-					if v:IsA("GuiObject") and #v:GetChildren() > 0 then
-						return recurseMake(element)
+					if (v:IsA("LocalScript") or v:IsA("ModuleScript")) then
+						table.insert(scriptQueue,v)
+					elseif #v:GetChildren() > 0 then
+						if v.Name == "UISounds" then
+							warn("found this",last.Parent.Name)
+						end
+						return recurseMake(element)	
 					end
+				end
+				for j,k in pairs(scriptQueue)do
+					local scriptSource = k.Source
+					_G.uiScreen = k:FindFirstAncestorWhichIsA("PluginGui")
+					--local script = self:createInstance(v.ClassName, {
+					--	Name = v.Name;
+					--	Parent = last
+					--})
+					--						print(v.Name,script:FindFirstAncestorWhichIsA('PluginGui'),)
+					--do
+					--scriptSource = scriptSource:gsub("player:GetMouse", "plugin:GetMouse")
+					--scriptSource = scriptSource:gsub("player.Character or player.Character:Wait()", "_G.Character")
+
+
+					----scriptSource = scriptSource:gsub("local character = player.Character or player.CharacterAdded:Wait()", ([[
+					----	local character = script:FindFirstAncestorWhichIsA("PluginGui"):FindFirstChild("Utilities"):FindFirstChild("ViewPort"):FindFirstChild("WorldModel"):FindFirstChild("Character")
+					----]]):gsub("%s+", ''))
+					local lines = {}
+					for line in scriptSource:gmatch '[^\n]+' do
+						table.insert(lines, line)
+					end
+					for index,line in pairs(lines)do
+						if line == "local character = player.Character or player.CharacterAdded:Wait()" then
+							lines[index] = "local character = _G.Character"
+						elseif line == "local mouse = player:GetMouse()" then
+							lines[index] = "local mouse = plugin:GetMouse()"
+						elseif line:gsub("script.Parent", "_G.uiScreen") then
+							lines[index] = line:gsub("script.Parent", "_G.uiScreen")
+						end
+						
+						if line == "local player = PlayerService.LocalPlayer" then
+							lines[index] = "local player = _G.player"
+						--elseif line:gsub("PlayerService.LocalPlayer","_G.player") then
+						--	lines[index] = lines:gsub("PlayerService.LocalPlayer","_G.player")
+						end
+
+					end
+
+					local function recompile()
+						return table.concat(lines,"\n")
+					end
+					scriptSource = recompile()
+					--							scriptSource = scriptSource:gsub("Added:Wait()()", '')
+
+
+					--print(scriptSource)
+					--end
+					--						script.Source = scriptSource
+					print(scriptSource,type(scriptSource))
+					assert(loadstring(tostring(scriptSource)))()
+
+					--return recurseMake(element)
+					if #k:GetChildren() > 0 then
+
+					else
+						continue
+					end	
 				end
 			end
 			
@@ -210,7 +409,7 @@ function main:enableGridFunctions(gridImage, constraint)
 			end
 			zoomTween = TweenService:Create(gridImage, TweenInfo.new(.3, Enum.EasingStyle.Quint), {TileSize = UDim2.fromOffset(newZoom,newZoom)})
 			zoomTween:Play()
-			print(newZoom)
+			--print(newZoom)
 			--gridImage.TileSize = UDim2.fromOffset(newZoom,newZoom);
 		end
 	end)
