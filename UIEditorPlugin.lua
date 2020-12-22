@@ -91,9 +91,6 @@ function main:createFromStarterGui()
 				for i,v in pairs(element:GetChildren())do
 					v.Parent = last.Parent
 					if v:IsA("GuiObject") and #v:GetChildren() > 0 then
-						v.MouseEnter:Connect(function()
-							print("entered")
-						end)
 						return recurseMake(element)
 					end
 				end
